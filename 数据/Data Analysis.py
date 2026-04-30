@@ -1,108 +1,144 @@
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.cm as cm
+import warnings
 
-# 设置中文字体和负号
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
-
-# 读取 Excel 数据
-file_path = r"F:\asus\Desktop\毕业设计数据\数据表格\2160粗轧数据.xlsx"
-df = pd.read_excel(file_path)
-
-# 确定预测目标
-target = '实测宽度-R2-5'
-
-# 获取参数
-features = [col for col in df.columns if col != target and col != 'Unnamed: 0']
-
-# 抽样，约20%
-df_sampled = df.sample(frac=0.2, random_state=42)
-
-# 计算画板的布局
-n_cols = 5
-n_rows = (len(features) + n_cols - 1) // n_cols
-
-# 准备画布（高度会根据行数自动拉长）
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(25, 5 * n_rows))
-axes = axes.flatten()
-
-# 循环画出所有参数的图
-for i, feature in enumerate(features):
-    sns.scatterplot(data=df_sampled, x=feature, y=target, ax=axes[i], color='blue', s=15)
-    axes[i].set_title(f"{feature} 与预测宽度的关系", fontsize=14)
-    axes[i].set_xlabel(feature, fontsize=12)
-    axes[i].set_ylabel(target, fontsize=12)
-
-# 删除空白画板
-for j in range(len(features), len(axes)):
-    fig.delaxes(axes[j])
-plt.tight_layout()
-
-# 保存图片
-save_path = r"/所有参数散点图_实心精简版.png"
-plt.savefig(save_path, dpi=300)  # dpi=300 保证图片放大依然清晰
-
-print(f"散点分布图已生成：{save_path}")
+# 忽略一些不必要的 seaborn 警告
+warnings.filterwarnings("ignore")
 
 
-file_path = r"F:\asus\Desktop\毕业设计数据\数据表格\2160粗轧数据.xlsx"
-df = pd.read_excel(file_path)
-
-# 确定我们在图表中要展示的四个关键列名
-# 请确保你的 Excel 文件包含这些列，否则会报错
-x_col = '板坯宽度实测值(热态)'    # X轴：初始宽度
-y_col = 'R2-5压下量'             # Y轴：最后一道次压下量
-z_col = '平辊实际轧制力-R2-5'    # Z轴：最后一道次轧制力
-c_col = '实测宽度-R2-5'          # 颜色深浅：你的终极预测目标！
-
-# 抽样（约20%）
-df_sampled = df.sample(frac=0.2, random_state=42)
-
-#创建画布
-fig = plt.figure(figsize=(10, 8)) # 设置图片比例
-ax = fig.add_subplot(111, projection='3d') # 指定为 3D 投影
-
-# 获取颜色映射的数据
-c_data = df_sampled[c_col]
-
-# 绘制散点图
-# s=20 设置点的大小
-# alpha=0.6 设置透明度，防止点重叠完全遮挡
-sc = ax.scatter(df_sampled[x_col],
-                df_sampled[y_col],
-                df_sampled[z_col],
-                c=c_data,
-                cmap='jet',
-                s=20,
-                alpha=0.6,
-                edgecolors='none') # 移除点的白色边缘，使画面更整洁
+def setup_matplotlib():
+    """设置字体和全局绘图参数"""
+    plt.rcParams['font.sans-serif'] = ['SimHei']  # 用黑体显示中文
+    plt.rcParams['axes.unicode_minus'] = False  # 正常显示负号
+    # 提高全局图表的分辨率和清晰度
+    plt.rcParams['figure.dpi'] = 100
 
 
-# 设置坐标轴标签
-ax.set_xlabel(f'{x_col} (mm)', fontsize=12)
-ax.set_ylabel(f'{y_col} (%)', fontsize=12)
-ax.set_zlabel(f'{z_col} (°C)', fontsize=12)
-# ax.set_title(f'轧制参数与{c_col}的 3D 分布', fontsize=14, fontweight='bold', pad=20)
+def load_and_preprocess_data(file_path, sample_frac=0.2, random_seed=42):
+    """读取数据并进行预处理和抽样"""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"找不到文件: {file_path}")
 
-# 添加颜色条
-cbar = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.1)
-cbar.set_label(f'{c_col} (mm)', fontsize=12)
-cbar.set_ticks([-0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6]) # 可以根据需要调整刻度
+    print("正在读取数据...")
+    df = pd.read_excel(file_path)
 
-# 调整视角
-ax.view_init(elev=30, azim=120)
+    # 抽样（如果数据量极大，建议在此之前先清除异常值/空值）
+    df_sampled = df.sample(frac=sample_frac, random_state=random_seed).copy()
 
-# 自动调整排版
-plt.tight_layout()
+    # 如果有不参与绘图的无用列，在这里剔除
+    if 'Unnamed: 0' in df_sampled.columns:
+        df_sampled.drop(columns=['Unnamed: 0'], inplace=True)
+
+    print(f"数据读取完成，抽样后数据量: {df_sampled.shape[0]} 行")
+    return df_sampled
 
 
-save_path = r"/轧制数据3D分布图_静止版.png"
-# dpi=300 保证图片保存后非常清晰，适合贴入Word
-plt.savefig(save_path, dpi=300)
+def plot_2d_scatter_grid(df, target, save_dir):
+    """绘制所有特征与目标变量的 2D 散点分布图"""
+    print("正在生成 2D 散点图阵列...")
+    features = [col for col in df.columns if col != target]
 
-print(f"\n🏆3D 散点图已生成并保存：{save_path}")
-# 运行后图片会弹出来（可选项，如果想看一眼）
-plt.show()
+    n_cols = 5
+    n_rows = (len(features) + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(25, 4.5 * n_rows))
+    axes = axes.flatten()
+
+    for i, feature in enumerate(features):
+        # 优化点：加入 alpha 透明度，去除边缘色(edgecolor)，能有效解决点太密集导致“乱”的问题
+        sns.scatterplot(
+            data=df, x=feature, y=target, ax=axes[i],
+            color='#1f77b4', s=15, alpha=0.3, edgecolor=None
+        )
+        axes[i].set_title(f"{feature} vs 预测宽度", fontsize=12)
+        axes[i].set_xlabel(feature, fontsize=10)
+        axes[i].set_ylabel(target, fontsize=10)
+        axes[i].grid(True, linestyle='--', alpha=0.5)  # 添加淡色网格线辅助查看
+
+    # 删除多余的空白子图
+    for j in range(len(features), len(axes)):
+        fig.delaxes(axes[j])
+
+    plt.tight_layout(pad=2.0)
+
+    save_path = os.path.join(save_dir, "所有参数散点图_实心精简版.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"✅ 2D 散点分布图已保存至：{save_path}")
+
+
+def plot_3d_scatter(df, x_col, y_col, z_col, c_col, save_dir):
+    """绘制 3D 核心参数散点图"""
+    print("正在生成 3D 散点图...")
+    fig = plt.figure(figsize=(12, 9))
+    ax = fig.add_subplot(111, projection='3d')
+
+    c_data = df[c_col]
+
+    # 优化点：弃用 jet 颜色条（视觉不均匀），改用 viridis（数值越大越黄，越小越紫）
+    sc = ax.scatter(
+        df[x_col], df[y_col], df[z_col],
+        c=c_data, cmap='viridis', s=25, alpha=0.7, edgecolors='none'
+    )
+
+    # 设置坐标轴标签（注意单位的修正）
+    ax.set_xlabel(f'\n{x_col}\n(mm)', fontsize=11, linespacing=1.5)
+    ax.set_ylabel(f'\n{y_col}\n(mm/%)', fontsize=11, linespacing=1.5)  # 压下量单位通常是mm或%
+    ax.set_zlabel(f'\n{z_col}\n(kN)', fontsize=11, linespacing=1.5)  # 轧制力单位通常是kN或t，而不是°C
+
+    ax.set_title(f'核心轧制参数与 [{c_col}] 的 3D 映射', fontsize=15, pad=15)
+
+    # 优化颜色条：移除硬编码的 ticks，让 matplotlib 自动根据数据分布计算刻度
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.5, pad=0.1)
+    cbar.set_label(f'{c_col}', fontsize=12)
+
+    # 调整视角 (仰角, 方位角)
+    ax.view_init(elev=25, azim=135)
+
+    # 调整面板背景颜色，让图看起来更现代
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
+
+    plt.tight_layout()
+
+    save_path = os.path.join(save_dir, "轧制数据3D分布图_静止版.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
+    print(f"✅ 3D 散点图已保存至：{save_path}")
+    plt.show()
+
+
+def main():
+    # 1. 基础配置
+    setup_matplotlib()
+
+    file_path = r"F:\asus\Desktop\毕业设计数据\2160粗轧数据.xlsx"
+    target_col = '实测宽度-R2-5'
+
+    # 创建保存图片的目录
+    save_dir = r"F:\asus\Desktop\毕业设计数据"
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 2. 读取并预处理数据 (仅执行一次)
+    try:
+        df = load_and_preprocess_data(file_path, sample_frac=0.2)
+    except Exception as e:
+        print(f"数据加载失败: {e}")
+        return
+
+    # 3. 绘制 2D 全量散点图
+    plot_2d_scatter_grid(df, target_col, save_dir)
+
+    # 4. 绘制 3D 核心参数散点图
+    x_col = '板坯宽度实测值(热态)'
+    y_col = 'R2-5压下量'
+    z_col = '平辊实际轧制力-R2-5'
+    plot_3d_scatter(df, x_col, y_col, z_col, target_col, save_dir)
+
+
+if __name__ == "__main__":
+    main()

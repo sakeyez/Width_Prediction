@@ -3,13 +3,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-
+# ==========================================
+# 0. 基础设置 (纯正学术风，抛弃中文烦恼)
+# ==========================================
+# 使用自带的高级网格风格，纯英文绝对不会报错
 plt.style.use('seaborn-v0_8-whitegrid')
 
 
-
+# ==========================================
+# 1. 函数定义：一键生成 Parity Plot (散点对比图)
+# ==========================================
 def draw_parity_plot(ax, df_path, model_name, color):
-
+    print(f"📖 Reading data for {model_name} from: {df_path} ...")
     try:
         df = pd.read_csv(df_path)
     except FileNotFoundError:
