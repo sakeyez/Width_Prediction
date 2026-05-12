@@ -1,0 +1,13 @@
+{
+  "num_rows": 501,
+  "mean_real_error_before": 274.76780439121757,
+  "mean_model_error_before": 274.7513513096564,
+  "mean_model_error_after": 196.84984982435063,
+  "mean_improvement_vs_real": 77.91795456686691,
+  "mean_improvement_vs_model": 77.9015014853057,
+  "optimization_columns": [
+    "R2-1压下量",
+    "R2-3压下量",
+    "R2-5压下量"
+  ]
+}
