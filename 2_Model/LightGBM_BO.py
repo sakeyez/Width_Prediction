@@ -53,8 +53,8 @@ VAL_PATH = os.path.join(BASE_DIR, "Val_Data.xlsx")
 TEST_PATH = os.path.join(BASE_DIR, "Test_Data.xlsx")
 
 TARGET_CANDIDATES = ["实测宽度-R2-5"]
-SETTING_TARGET = "出口宽度设定值-R2-5"
 RUN_OPTION = 1
+BO_STAGE_MODE = "stage1_only"
 # 1: BO搜索 + 最终训练 + 导出结果
 
 STAGE1_TRIALS = 100
@@ -194,7 +194,7 @@ def load_datasets():
         dataframe.columns = dataframe.columns.str.strip()
 
     target = resolve_target_column(df_train.columns)
-    features = [column for column in df_train.columns if column not in [target, SETTING_TARGET]]
+    features = [column for column in df_train.columns if column not in [target]]
     x_train = df_train[features].to_numpy()
     y_train = df_train[target].to_numpy()
     x_val = df_val[features].to_numpy()
@@ -378,6 +378,9 @@ def run_bo_search(x_train, y_train, x_val, y_val):
         y_val=y_val,
     )
     fixed_params.update(stage1_params)
+
+    if BO_STAGE_MODE == "stage1_only":
+        return stage1_trial, fixed_params, history_stage1
 
     stage2_trial, stage2_params, history_stage2 = run_stage_search(
         stage_name="Stage2",

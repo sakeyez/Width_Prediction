@@ -44,10 +44,12 @@ RUN_OPTION = 1
 # 1: BO搜索 + 最终训练 + 导出结果
 # 2: 只画图，不重新训练
 
-BO_TRIALS = 30
+BO_TRIALS = 60
 FIXED_MLP_HIDDEN_SIZES = (16,)
-TARGET_MAE_RANGE = (4.2, 5.5)
-TARGET_MSE_RANGE = (28.0, 50.0)
+FIXED_SUPERVISED_MAX_EPOCHS = 75
+FIXED_EARLY_STOPPING_PATIENCE = 10
+FIXED_SUPERVISED_LEARNING_RATE = 0.001
+FIXED_ALPHA = 5e-4
 
 RESULT_EXCEL_PATH = os.path.join(DATA_OUTPUT_DIR, "DBN_BO_prediction_results.xlsx")
 RESULT_CSV_PATH = os.path.join(DATA_OUTPUT_DIR, "result_DBN_BO.csv")
@@ -195,14 +197,6 @@ def compute_metrics(y_true, y_pred):
     }
 
 
-def interval_distance(value, lower, upper):
-    if value < lower:
-        return lower - value
-    if value > upper:
-        return value - upper
-    return 0.0
-
-
 def evaluate_dataset(name, x_scaled, y_true, model, scaler_y):
     y_pred_scaled = model.predict(x_scaled)
     y_pred = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
@@ -319,18 +313,15 @@ def resolve_target_column(columns):
 def suggest_params(trial):
     n_components = trial.suggest_int("n_components", 48, 256, step=8)
     rbm_n_iter = trial.suggest_int("rbm_n_iter", 10, 50)
-    supervised_max_epochs = trial.suggest_int("supervised_max_epochs", 40, 120)
-    early_stopping_patience = trial.suggest_int("early_stopping_patience", 8, 25)
-    early_stopping_patience = min(early_stopping_patience, supervised_max_epochs - 1)
     return {
         "rbm_hidden_layers": (n_components,),
         "mlp_hidden_sizes": FIXED_MLP_HIDDEN_SIZES,
         "rbm_learning_rate": trial.suggest_float("rbm_learning_rate", 5e-4, 2e-2, log=True),
         "rbm_n_iter": rbm_n_iter,
-        "supervised_learning_rate": trial.suggest_float("supervised_learning_rate", 5e-4, 2e-2, log=True),
-        "supervised_max_epochs": supervised_max_epochs,
-        "early_stopping_patience": early_stopping_patience,
-        "alpha": trial.suggest_float("alpha", 1e-5, 1e-2, log=True),
+        "supervised_learning_rate": FIXED_SUPERVISED_LEARNING_RATE,
+        "supervised_max_epochs": FIXED_SUPERVISED_MAX_EPOCHS,
+        "early_stopping_patience": FIXED_EARLY_STOPPING_PATIENCE,
+        "alpha": FIXED_ALPHA,
     }
 
 
@@ -355,12 +346,7 @@ def evaluate_params(params, x_train_scaled, y_train_scaled, x_val_scaled, y_val_
     val_pred_scaled = model.predict(x_val_scaled)
     val_pred = scaler_y.inverse_transform(val_pred_scaled.reshape(-1, 1)).ravel()
     metrics = compute_metrics(y_val_raw, val_pred)
-    mae_penalty = interval_distance(metrics["MAE"], *TARGET_MAE_RANGE)
-    mse_penalty = interval_distance(metrics["MSE"], *TARGET_MSE_RANGE)
-    mae_center = sum(TARGET_MAE_RANGE) / 2.0
-    mse_center = sum(TARGET_MSE_RANGE) / 2.0
-    center_pull = 0.25 * abs(metrics["MAE"] - mae_center) + 0.02 * abs(metrics["MSE"] - mse_center)
-    objective = 15.0 * mae_penalty + 0.35 * mse_penalty + center_pull
+    objective = metrics["RMSE"]
     return {
         "objective": float(objective),
         "metrics": metrics,
