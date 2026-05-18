@@ -2,3 +2,6 @@
 .idea/
 __pycache__/
 *.pyc
+_perm_test.txt
+runtime_outputs/
+~$*.xlsx

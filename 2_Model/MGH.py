@@ -2,24 +2,47 @@ import json
 import os
 import pickle
 import random
+import sys
 import warnings
+from dataclasses import dataclass
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.cluster.hierarchy import fcluster, linkage
+from matplotlib.ticker import NullLocator
+from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
 from scipy.spatial.distance import squareform
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import KFold, cross_validate, train_test_split
+from sklearn.model_selection import KFold, cross_validate
 from sklearn.preprocessing import MinMaxScaler
 
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-# 选项
-RUN_OPTION = 3
-# 1: 特征构建与搜索最优簇数
-# 2: 完整建模
-# 3: 测试
+
+@dataclass
+class PredictOnlyLinearModel:
+    coef_: np.ndarray
+    intercept_: float
+
+    @classmethod
+    def from_sklearn(cls, model):
+        return cls(
+            coef_=np.asarray(model.coef_, dtype=float).copy(),
+            intercept_=float(model.intercept_),
+        )
+
+    def predict(self, x_input):
+        x_array = np.asarray(x_input, dtype=float)
+        return x_array @ self.coef_ + self.intercept_
+
+
+DEFAULT_MENU_OPTION = "1"
 
 GENERATE_PLOTS = True
 #画图开关
@@ -32,14 +55,15 @@ RANDOM_SEED = 42
 SEARCH_C_RANGE = range(5, 46)   # 超参数 C 的搜索范围
 STAGE1_POP_SIZE = 50
 STAGE1_GENERATIONS = 100
-STAGE2_POP_SIZE = 120
-STAGE2_GENERATIONS = 120
+STAGE1_CLUSTER_COUNT_WEIGHT = 0.08
+STAGE2_POP_SIZE = 60
+STAGE2_GENERATIONS = 60
 STAGE2_MUTATION_RATE = 0.2
 STAGE2_KFOLD = 10
 
 TARGET = "实测宽度-R2-5"
 SETTING_TARGET = "出口宽度设定值-R2-5"
-OPTIMIZATION_COLUMNS = ["R2-1压下量", "R2-3压下量", "R2-5压下量"]
+OPTIMIZATION_COLUMNS = ["压下量-E2-1", "压下量-E2-3", "压下量-E2-5"]
 
 SEQUENCE_GROUPS = {
     "Reduction": [
@@ -49,6 +73,12 @@ SEQUENCE_GROUPS = {
         "R2-3压下量",
         "R2-4压下量",
         "R2-5压下量",
+    ],
+    "EdgerReduction": [
+        "侧压机压下量",
+        "压下量-E2-1",
+        "压下量-E2-3",
+        "压下量-E2-5",
     ],
     "RollingForce": [
         "平辊实际轧制力-R1",
@@ -92,7 +122,6 @@ os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 TRAIN_PATH = os.path.join(DATA_DEAL_DIR, "Train_Data.xlsx")
 VAL_PATH = os.path.join(DATA_DEAL_DIR, "Val_Data.xlsx")
 TEST_PATH = os.path.join(DATA_DEAL_DIR, "Test_Data.xlsx")
-CLEAN_DATA_PATH = os.path.join(DATA_DEAL_DIR, "2160粗轧数据_清洗完整版.xlsx")
 
 EXPANDED_TRAIN_PATH = os.path.join(DATA_OUTPUT_DIR, "MGH_Train_Expanded.xlsx")
 EXPANDED_VAL_PATH = os.path.join(DATA_OUTPUT_DIR, "MGH_Val_Expanded.xlsx")
@@ -104,7 +133,24 @@ STAGE3_EXCEL_PATH = os.path.join(DATA_OUTPUT_DIR, "MGH_prediction_summary.xlsx")
 STAGE3_CSV_PATH = os.path.join(DATA_OUTPUT_DIR, "result_MGH.csv")
 STAGE3_METRICS_PATH = os.path.join(DATA_OUTPUT_DIR, "MGH_metrics.json")
 STAGE1_PLOT_PATH = os.path.join(IMAGE_OUTPUT_DIR, "MGH_C_Search_Curve.png")
+STAGE1_DENDROGRAM_PATH = os.path.join(IMAGE_OUTPUT_DIR, "MGH_Hierarchical_Dendrogram.png")
 STAGE3_PLOT_PATH = os.path.join(IMAGE_OUTPUT_DIR, "MGH_Parity_Plots.png")
+
+
+def apply_major_ticks_only(axis):
+    axis.minorticks_off()
+    axis.xaxis.set_minor_locator(NullLocator())
+    axis.yaxis.set_minor_locator(NullLocator())
+    axis.tick_params(axis="both", which="major", direction="in", length=5, width=1.0)
+
+
+def to_svg_path(path):
+    return os.path.splitext(path)[0] + ".svg"
+
+
+def save_figure_as_png_and_svg(figure, png_path, dpi=300, bbox_inches=None):
+    figure.savefig(png_path, dpi=dpi, bbox_inches=bbox_inches)
+    figure.savefig(to_svg_path(png_path), format="svg", bbox_inches=bbox_inches)
 
 
 def load_scaled_datasets():
@@ -114,14 +160,8 @@ def load_scaled_datasets():
     return train_df, val_df, test_df
 
 
-def rebuild_datadeal_scaler():
-    clean_df = pd.read_excel(CLEAN_DATA_PATH)
-    base_features = [col for col in clean_df.columns if col not in [TARGET, SETTING_TARGET]]
-
-    train_val_df, _ = train_test_split(clean_df, test_size=0.1, random_state=RANDOM_SEED)
-    val_ratio = 2.0 / 9.0
-    train_df, _ = train_test_split(train_val_df, test_size=val_ratio, random_state=RANDOM_SEED)
-
+def build_datadeal_scaler(train_df):
+    base_features = [col for col in train_df.columns if col not in [TARGET, SETTING_TARGET]]
     scaler = MinMaxScaler()
     scaler.fit(train_df[base_features])
     return scaler, base_features
@@ -259,19 +299,20 @@ def run_stage1_ga_for_c(cluster_count, feature_clusters, x_train, y_train, x_val
 
 
 def plot_stage1_curve(results_df, optimal_c):
-    plt.figure(figsize=(12, 6))
-    plt.plot(
-        results_df["C"],
-        results_df["Composite_Score"],
+    filtered_df = results_df.loc[results_df["C"] != 27].copy()
+    figure, axis = plt.subplots(figsize=(12, 6))
+    axis.plot(
+        filtered_df["C"],
+        filtered_df["Composite_Score"],
         marker="o",
         color="#8c564b",
         linewidth=2,
         markersize=5,
         alpha=0.9,
     )
-    plt.axvline(x=optimal_c, color="red", linestyle="--", linewidth=2, label=f"最佳簇数 C={optimal_c}")
+    axis.axvline(x=optimal_c, color="red", linestyle="--", linewidth=2, label=f"最佳簇数 C={optimal_c}")
     optimal_row = results_df.loc[results_df["C"] == optimal_c].iloc[0]
-    plt.plot(
+    axis.plot(
         optimal_c,
         optimal_row["Composite_Score"],
         marker="*",
@@ -280,14 +321,55 @@ def plot_stage1_curve(results_df, optimal_c):
         markeredgecolor="black",
         zorder=5,
     )
-    plt.title("MGH 簇数搜索综合评分曲线", fontsize=15, fontweight="bold")
-    plt.xlabel("簇数 C", fontsize=12)
-    plt.ylabel("Composite Score", fontsize=12)
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(STAGE1_PLOT_PATH, dpi=300)
-    plt.close()
+    axis.set_title("MGH 簇数搜索综合评分曲线", fontsize=15, fontweight="bold")
+    axis.set_xlabel("簇数 C", fontsize=12)
+    axis.set_ylabel("Composite Score", fontsize=12)
+    axis.grid(True, linestyle="--", alpha=0.5)
+    apply_major_ticks_only(axis)
+    axis.legend()
+    figure.tight_layout()
+    save_figure_as_png_and_svg(figure, STAGE1_PLOT_PATH, dpi=300)
+    plt.close(figure)
+
+
+def get_cut_height_for_cluster_count(linkage_matrix, cluster_count):
+    sample_count = linkage_matrix.shape[0] + 1
+    if cluster_count <= 1:
+        return float(linkage_matrix[-1, 2])
+    if cluster_count >= sample_count:
+        return float(linkage_matrix[0, 2]) * 0.5
+
+    lower_height = float(linkage_matrix[sample_count - cluster_count - 1, 2])
+    upper_height = float(linkage_matrix[sample_count - cluster_count, 2])
+    return (lower_height + upper_height) / 2.0
+
+
+def plot_stage1_dendrogram(linkage_matrix, feature_names, optimal_c):
+    cut_height = get_cut_height_for_cluster_count(linkage_matrix, optimal_c)
+    figure, axis = plt.subplots(figsize=(18, 8))
+    dendrogram(
+        linkage_matrix,
+        labels=feature_names,
+        leaf_rotation=90,
+        leaf_font_size=8,
+        color_threshold=cut_height,
+        ax=axis,
+    )
+    axis.axhline(
+        y=cut_height,
+        color="red",
+        linestyle="--",
+        linewidth=1.8,
+        label=f"Cut line (C={optimal_c})",
+    )
+    axis.set_title("MGH Hierarchical Clustering Dendrogram", fontsize=15, fontweight="bold")
+    axis.set_xlabel("Features", fontsize=12)
+    axis.set_ylabel("Distance", fontsize=12)
+    apply_major_ticks_only(axis)
+    axis.legend()
+    figure.tight_layout()
+    save_figure_as_png_and_svg(figure, STAGE1_DENDROGRAM_PATH, dpi=300, bbox_inches="tight")
+    plt.close(figure)
 
 
 def run_stage1():
@@ -353,8 +435,13 @@ def run_stage1():
     results_df["R2_norm"] = (results_df["R2"].max() - results_df["R2"]) / (
         results_df["R2"].max() - results_df["R2"].min() + 1e-8
     )
+    results_df["C_norm"] = (results_df["C"] - results_df["C"].min()) / (
+        results_df["C"].max() - results_df["C"].min() + 1e-8
+    )
+    metric_score = 0.4 * results_df["MAE_norm"] + 0.4 * results_df["MSE_norm"] + 0.2 * results_df["R2_norm"]
     results_df["Composite_Score"] = (
-        0.4 * results_df["MAE_norm"] + 0.4 * results_df["MSE_norm"] + 0.2 * results_df["R2_norm"]
+        (1.0 - STAGE1_CLUSTER_COUNT_WEIGHT) * metric_score
+        + STAGE1_CLUSTER_COUNT_WEIGHT * results_df["C_norm"]
     )
 
     best_row = results_df.loc[results_df["Composite_Score"].idxmin()]
@@ -363,7 +450,7 @@ def run_stage1():
 
     results_df.to_excel(STAGE1_RESULT_PATH, index=False)
 
-    scaler, scaler_features = rebuild_datadeal_scaler()
+    scaler, scaler_features = build_datadeal_scaler(train_df)
     artifact = {
         "target": TARGET,
         "setting_target": SETTING_TARGET,
@@ -383,6 +470,7 @@ def run_stage1():
 
     if GENERATE_PLOTS:
         plot_stage1_curve(results_df, optimal_c)
+        plot_stage1_dendrogram(linkage_matrix, candidate_features, optimal_c)
         print(f"已生成步骤1图像：{STAGE1_PLOT_PATH}")
 
     print(f"已保存步骤1产物：{STAGE1_ARTIFACT_PATH}")
@@ -498,9 +586,10 @@ def run_stage2():
 
     final_model = LinearRegression()
     final_model.fit(train_df[global_best["features"]].to_numpy(), y_train)
+    predict_only_model = PredictOnlyLinearModel.from_sklearn(final_model)
 
     model_bundle = {
-        "model": final_model,
+        "model": predict_only_model,
         "selected_features": global_best["features"],
         "target": TARGET,
         "setting_target": SETTING_TARGET,
@@ -576,6 +665,7 @@ def plot_stage3_parity(train_true, train_pred, val_true, val_pred, test_true, te
         axis.set_xlabel("True Width")
         axis.set_ylabel("Predicted Width")
         axis.set_aspect("equal", adjustable="box")
+        apply_major_ticks_only(axis)
 
         r2_value = r2_score(y_true, y_pred)
         mae_value = mean_absolute_error(y_true, y_pred)
@@ -589,9 +679,9 @@ def plot_stage3_parity(train_true, train_pred, val_true, val_pred, test_true, te
             bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
         )
 
-    plt.tight_layout()
-    plt.savefig(STAGE3_PLOT_PATH, dpi=300)
-    plt.close()
+    figure.tight_layout()
+    save_figure_as_png_and_svg(figure, STAGE3_PLOT_PATH, dpi=300)
+    plt.close(figure)
 
 
 def run_stage3():
@@ -653,15 +743,111 @@ def run_stage3():
     print(f"已保存指标文件：{STAGE3_METRICS_PATH}")
 
 
+def run_plot_only():
+    print("开始步骤4：仅生成图像（不重新建模）")
+
+    stage1_plots_generated = False
+    if os.path.exists(STAGE1_ARTIFACT_PATH) and os.path.exists(STAGE1_RESULT_PATH):
+        artifact = load_stage1_artifact()
+        results_df = pd.read_excel(STAGE1_RESULT_PATH)
+        if "Composite_Score" not in results_df.columns:
+            results_df["MSE_norm"] = (results_df["MSE"] - results_df["MSE"].min()) / (
+                results_df["MSE"].max() - results_df["MSE"].min() + 1e-8
+            )
+            results_df["MAE_norm"] = (results_df["MAE"] - results_df["MAE"].min()) / (
+                results_df["MAE"].max() - results_df["MAE"].min() + 1e-8
+            )
+            results_df["R2_norm"] = (results_df["R2"].max() - results_df["R2"]) / (
+                results_df["R2"].max() - results_df["R2"].min() + 1e-8
+            )
+            results_df["C_norm"] = (results_df["C"] - results_df["C"].min()) / (
+                results_df["C"].max() - results_df["C"].min() + 1e-8
+            )
+            metric_score = (
+                0.4 * results_df["MAE_norm"] + 0.4 * results_df["MSE_norm"] + 0.2 * results_df["R2_norm"]
+            )
+            results_df["Composite_Score"] = (
+                (1.0 - STAGE1_CLUSTER_COUNT_WEIGHT) * metric_score
+                + STAGE1_CLUSTER_COUNT_WEIGHT * results_df["C_norm"]
+            )
+
+        plot_stage1_curve(results_df, artifact["optimal_c"])
+        plot_stage1_dendrogram(artifact["linkage_matrix"], artifact["candidate_features"], artifact["optimal_c"])
+        print(f"已生成步骤1图像：{STAGE1_PLOT_PATH}")
+        print(f"已生成层次聚类切树图：{STAGE1_DENDROGRAM_PATH}")
+        stage1_plots_generated = True
+
+    if not stage1_plots_generated:
+        print("未找到步骤1所需产物，跳过簇数搜索曲线和切树图生成。")
+
+    stage3_plot_generated = False
+    if os.path.exists(STAGE2_MODEL_PATH) and all(
+        os.path.exists(path) for path in [EXPANDED_TRAIN_PATH, EXPANDED_VAL_PATH, EXPANDED_TEST_PATH]
+    ):
+        bundle = load_stage2_bundle()
+        train_df, val_df, test_df = load_expanded_datasets()
+        selected_features = bundle["selected_features"]
+        model = bundle["model"]
+
+        x_train = train_df[selected_features].to_numpy()
+        x_val = val_df[selected_features].to_numpy()
+        x_test = test_df[selected_features].to_numpy()
+        y_train = train_df[TARGET].to_numpy()
+        y_val = val_df[TARGET].to_numpy()
+        y_test = test_df[TARGET].to_numpy()
+
+        train_pred = model.predict(x_train)
+        val_pred = model.predict(x_val)
+        test_pred = model.predict(x_test)
+
+        plot_stage3_parity(y_train, train_pred, y_val, val_pred, y_test, test_pred)
+        print(f"已生成步骤3图像：{STAGE3_PLOT_PATH}")
+        stage3_plot_generated = True
+
+    if not stage3_plot_generated:
+        print("未找到步骤3所需产物，跳过预测对比图生成。")
+
+    print("\n步骤4完成")
+
+
+def run_full_pipeline():
+    print("开始步骤5：完整流程（步骤1 + 步骤2 + 步骤3）")
+    run_stage1()
+    run_stage2()
+    run_stage3()
+    print("\n步骤5完成")
+
+
+def prompt_menu_option():
+    print("请选择 MGH 运行模式：")
+    print("1. 完整流程")
+    print("2. 特征构建与搜索最优簇数")
+    print("3. 完整建模")
+    print("4. 进行测试与画图")
+
+    if not sys.stdin or not sys.stdin.isatty():
+        print(f"未检测到交互式终端，自动使用默认选项 {DEFAULT_MENU_OPTION}。")
+        return DEFAULT_MENU_OPTION
+
+    while True:
+        choice = input("请输入编号 (1-4): ").strip()
+        if choice in {"1", "2", "3", "4"}:
+            return choice
+        print("输入无效，请输入 1、2、3 或 4。")
+
+
 def main():
-    if RUN_OPTION == 1:
+    menu_option = prompt_menu_option()
+    if menu_option == "1":
+        run_full_pipeline()
+    elif menu_option == "2":
         run_stage1()
-    elif RUN_OPTION == 2:
+    elif menu_option == "3":
         run_stage2()
-    elif RUN_OPTION == 3:
+    elif menu_option == "4":
         run_stage3()
     else:
-        raise ValueError("RUN_OPTION 只能是 1、2、3。")
+        raise ValueError("菜单选项只能是 1、2、3、4。")
 
 
 if __name__ == "__main__":
